@@ -3,8 +3,22 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fetch from "node-fetch";
 
-// Define types for Shopify GraphQL response
-interface ShopifyGraphQLResponse {
+// Simple type for product data
+type Product = {
+  id: string;
+  title: string;
+  handle: string;
+  descriptionHtml?: string;
+  productType?: string;
+  vendor?: string;
+  tags?: string[];
+  status?: string;
+  featuredImage?: { url: string; altText?: string };
+  variants?: Array<{ id: string; title: string; sku?: string; price: string; inventoryQuantity?: number }>;
+};
+
+// Type for GraphQL response
+type ShopifyResponse = {
   data?: {
     products?: {
       edges?: Array<{
@@ -14,13 +28,11 @@ interface ShopifyGraphQLResponse {
           handle: string;
           descriptionHtml?: string;
           productType?: string;
+          onlineStorePreviewUrl?: string;
           vendor?: string;
           tags?: string[];
           status?: string;
-          featuredImage?: {
-            url: string;
-            altText?: string;
-          };
+          featuredImage?: { url: string; altText?: string };
           variants?: {
             edges?: Array<{
               node: {
@@ -34,33 +46,20 @@ interface ShopifyGraphQLResponse {
           };
         };
       }>;
-      pageInfo?: {
-        hasNextPage: boolean;
-      };
     };
   };
-  errors?: Array<{
-    message: string;
-    locations?: Array<{ line: number; column: number }>;
-    path?: string[];
-  }>;
-}
+  errors?: Array<{ message: string }>;
+};
 
-// Fixed Shopify store and access token values
-const SHOPIFY_STORE = "....myshopify.com";
+const SHOPIFY_STORE = ".myshopify.com";
 const SHOPIFY_ACCESS_TOKEN = "";
 
-const server = new McpServer({
-  name: "shopify-mcp",
-  version: "1.0.0"
-});
+const server = new McpServer({ name: "shopify-mcp", version: "1.0.0" });
 
 server.tool(
   "fetch-products",
   "Fetch products from a given shopify store",
-  {
-    product: z.string().describe("the product to fetch"),
-  },
+  { product: z.string().describe("the product to fetch") },
   async ({ product }) => {
     try {
       const response = await fetch(`https://${SHOPIFY_STORE}/admin/api/2025-01/graphql.json`, {
@@ -73,93 +72,43 @@ server.tool(
           query: `
             query AdminSearchProducts($searchQuery: String!) {
               products(first: 10, query: $searchQuery) {
-                edges {
-                  node {
-                    id
-                    title
-                    handle
-                    descriptionHtml
-                    productType
-                    vendor
-                    tags
-                    status
-                    featuredImage {
-                      url
-                      altText
-                    }
-                    variants(first: 3) {
-                      edges {
-                        node {
-                          id
-                          title
-                          sku
-                          price
-                          inventoryQuantity
-                        }
-                      }
-                    }
-                  }
-                }
-                pageInfo {
-                  hasNextPage
-                }
+                edges { node {
+                  id title handle descriptionHtml productType onlineStorePreviewUrl vendor tags status
+                  featuredImage { url altText }
+                  variants(first: 3) { edges { node { id title sku price inventoryQuantity } } }
+                }}
               }
             }
           `,
-          variables: {
-            searchQuery: product
-          }
+          variables: { searchQuery: product }
         })
       });
 
-      const data = await response.json() as ShopifyGraphQLResponse;
+      const data = await response.json() as ShopifyResponse;
       
       if (data.errors) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error fetching products: ${JSON.stringify(data.errors)}`,
-            },
-          ],
-        };
+        return { content: [{ type: "text", text: `Error: ${JSON.stringify(data.errors)}` }] };
       }
 
-      const products = data.data?.products?.edges?.map(edge => edge.node) || [];
+      // Transform and simplify the products data
+      const products: Product[] = (data.data?.products?.edges || []).map(edge => {
+        const node = edge.node;
+        return {
+          ...node,
+          variants: node.variants?.edges?.map(v => v.node) || []
+        };
+      });
       
-      if (products.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `No products found matching "${product}"`,
-            },
-          ],
-        };
-      }
-
       return {
-        content: [
-          {
-            type: "text",
-            text: `Found ${products.length} products matching "${product}":`,
-          },
-          {
-            type: "text",
-            text: JSON.stringify(products, null, 2),
-          },
-        ],
+        content: [{
+          type: "text", 
+          text: products.length > 0 
+            ? `Found ${products.length} products:\n${JSON.stringify(products, null, 2)}`
+            : `No products found matching "${product}"`
+        }]
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error fetching products: ${errorMessage}`,
-          },
-        ],
-      };
+      return { content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : String(error)}` }] };
     }
   }
 );
